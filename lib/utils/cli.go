@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"bytes"
 	"crypto/x509"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gravitational/teleport"
 
@@ -187,6 +189,58 @@ func EscapeControl(s string) string {
 		return fmt.Sprintf("%q", s)
 	}
 	return s
+}
+
+// Fire writes the provided log entry to the configured test logger
+func (r testHook) Fire(entry *log.Entry) error {
+	msg, err := entry.String()
+	if err != nil {
+		// defaultLogger().Warnf("Failed to convert log entry: %v.", err)
+		return nil
+	}
+	_, err = io.WriteString(r.w, msg)
+	return trace.Wrap(err)
+}
+
+// Levels returns the list of levels this hook is active on
+func (r testHook) Levels() []log.Level {
+	return log.AllLevels
+}
+
+type testHook struct {
+	w io.Writer
+}
+
+func newTestWriter(l testLogger) *testWriter {
+	return &testWriter{
+		l:   l,
+		buf: &bytes.Buffer{},
+	}
+}
+
+func (r *testWriter) Write(p []byte) (n int, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var lf = []byte("\n")
+	if !bytes.HasSuffix(p, lf) {
+		r.buf.Write(p)
+		return len(p), nil
+	}
+	r.buf.Write(p[:len(p)-len(lf)])
+	r.l.Log(r.buf.String())
+	r.buf.Reset()
+	return len(p), nil
+}
+
+type testWriter struct {
+	mu  sync.Mutex
+	l   testLogger
+	buf *bytes.Buffer
+}
+
+type testLogger interface {
+	// Log logs the specified values in the context of a test
+	Log(...interface{})
 }
 
 // needsQuoting returns true if any non-printable characters are found.

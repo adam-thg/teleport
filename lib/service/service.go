@@ -265,8 +265,8 @@ type TeleportProcess struct {
 	// during in-process reloads.
 	id string
 
-	// Entry is a process-local log entry.
-	*logrus.Entry
+	// FieldLogger is a process-local log entry.
+	logrus.FieldLogger
 
 	// keyPairs holds private/public key pairs used
 	// to get signed host certificates from auth server
@@ -534,6 +534,11 @@ func waitAndReload(ctx context.Context, cfg Config, srv Process, newTeleport New
 // and starts them under a supervisor, returning the supervisor object.
 func NewTeleport(cfg *Config) (*TeleportProcess, error) {
 	var err error
+	defer func() {
+		if err != nil {
+			fmt.Println(trace.DebugReport(err))
+		}
+	}()
 
 	// Before we do anything reset the SIGINT handler back to the default.
 	system.ResetInterruptSignalHandler()
@@ -633,7 +638,11 @@ func NewTeleport(cfg *Config) (*TeleportProcess, error) {
 
 	process.registerAppDepend()
 
-	process.Entry = logrus.WithFields(logrus.Fields{
+	logger := cfg.Log
+	if cfg.Log == nil {
+		logger = logrus.StandardLogger()
+	}
+	process.FieldLogger = logger.WithFields(logrus.Fields{
 		trace.Component: teleport.Component(teleport.ComponentProcess, process.id),
 	})
 

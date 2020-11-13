@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -191,7 +192,7 @@ func (s *IntSuite) newTeleportIoT(c *check.C, logins []string) *TeleInstance {
 		tconf.Console = nil
 		tconf.Token = "token"
 		tconf.AuthServers = []utils.NetAddr{
-			utils.NetAddr{
+			{
 				AddrNetwork: "tcp",
 				Addr:        net.JoinHostPort(Loopback, main.GetPortWeb()),
 			},
@@ -421,6 +422,8 @@ func (s *IntSuite) TestAuditOn(c *check.C) {
 				}
 				break loop
 			case <-timeoutC:
+				// FIXME: dump goroutines for debugging
+				pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
 				c.Fatalf("Timeout waiting for upload of session %v to complete to %v", session.ID, tt.auditSessionsURI)
 			}
 		}
@@ -631,8 +634,7 @@ func (s *IntSuite) TestInteroperability(c *check.C) {
 			cl.SSH(context.TODO(), []string{tt.inCommand}, false)
 			sessionEndC <- true
 		}()
-		err = waitFor(sessionEndC, time.Second*10)
-		c.Assert(err, check.IsNil)
+		waitFor(c, sessionEndC, time.Second*10)
 
 		// if we are looking for the output in a file, look in the file
 		// otherwise check stdout and stderr for the expected output
@@ -813,8 +815,7 @@ func (s *IntSuite) verifySessionJoin(c *check.C, t *TeleInstance) {
 	go joinSession()
 
 	// wait for the session to end
-	err := waitFor(sessionEndC, time.Second*10)
-	c.Assert(err, check.IsNil)
+	waitFor(c, sessionEndC, time.Second*10)
 
 	// make sure the output of B is mirrored in A
 	outputOfA := personA.Output(100)
@@ -1117,6 +1118,8 @@ func (s *IntSuite) runDisconnectTest(c *check.C, tc disconnectTestCase) {
 
 	select {
 	case <-time.After(tc.disconnectTimeout + time.Second):
+		// FIXME: dump goroutines for debugging
+		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
 		c.Fatalf("%s: timeout waiting for session to exit: %+v", timeNow(), tc)
 	case <-ctx.Done():
 		// session closed.  a test case is successful if the first
@@ -1928,7 +1931,13 @@ func (s *IntSuite) trustedClusters(c *check.C, test trustedClusterTest) {
 	trustedCluster.SetName(main.Secrets.SiteName + "-cluster")
 
 	c.Assert(main.Start(), check.IsNil)
+	defer func() {
+		c.Assert(main.StopAll(), check.IsNil)
+	}()
 	c.Assert(aux.Start(), check.IsNil)
+	defer func() {
+		c.Assert(aux.StopAll(), check.IsNil)
+	}()
 
 	err = trustedCluster.CheckAndSetDefaults()
 	c.Assert(err, check.IsNil)
@@ -2080,10 +2089,6 @@ func (s *IntSuite) trustedClusters(c *check.C, test trustedClusterTest) {
 	}
 	c.Assert(err, check.IsNil)
 	c.Assert(output.String(), check.Equals, "hello world\n")
-
-	// stop clusters and remaining nodes
-	c.Assert(main.StopAll(), check.IsNil)
-	c.Assert(aux.StopAll(), check.IsNil)
 }
 
 func checkGetClusters(c *check.C, tun reversetunnel.Server) []reversetunnel.RemoteSite {
@@ -2169,7 +2174,7 @@ func (s *IntSuite) TestTrustedTunnelNode(c *check.C) {
 		tconf.Console = nil
 		tconf.Token = "token"
 		tconf.AuthServers = []utils.NetAddr{
-			utils.NetAddr{
+			{
 				AddrNetwork: "tcp",
 				Addr:        net.JoinHostPort(Loopback, aux.GetPortWeb()),
 			},
@@ -2574,7 +2579,7 @@ func (s *IntSuite) TestDiscoveryNode(c *check.C) {
 		tconf.Console = nil
 		tconf.Token = "token"
 		tconf.AuthServers = []utils.NetAddr{
-			utils.NetAddr{
+			{
 				AddrNetwork: "tcp",
 				Addr:        net.JoinHostPort(Loopback, main.GetPortWeb()),
 			},
@@ -3239,6 +3244,8 @@ func (s *IntSuite) TestPAM(c *check.C) {
 		// Wait for the session to end or timeout after 10 seconds.
 		select {
 		case <-time.After(10 * time.Second):
+			// FIXME: dump goroutines for debugging
+			pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
 			c.Fatalf("Timeout exceeded waiting for session to complete.")
 		case <-ctx.Done():
 		}
@@ -3276,15 +3283,17 @@ func (s *IntSuite) TestRotateSuccess(c *check.C) {
 	go func() {
 		runErrCh <- service.Run(ctx, *config, func(cfg *service.Config) (service.Process, error) {
 			svc, err := service.NewTeleport(cfg)
-			serviceC <- &svcStartResult{svc: svc, err: trace.Wrap(err)}
+			if err != nil {
+				err = errors.New(err.Error())
+			}
+			serviceC <- &svcStartResult{svc: svc, err: err}
 			return svc, trace.Wrap(err)
 		})
 	}()
 
 	l := log.WithFields(log.Fields{trace.Component: teleport.Component("test", "rotate")})
 
-	svc, err := waitForProcessStart(serviceC)
-	c.Assert(err, check.IsNil)
+	svc := waitForProcessStart(c, serviceC)
 
 	// Setup user in the cluster
 	err = SetupUser(svc, s.me.Username, nil)
@@ -3308,8 +3317,7 @@ func (s *IntSuite) TestRotateSuccess(c *check.C) {
 	l.Debugf("Cert authority: %v", auth.CertAuthorityInfo(hostCA))
 
 	// wait until service phase update to be broadcasted (init phase does not trigger reload)
-	err = waitForProcessEvent(svc, service.TeleportPhaseChangeEvent, 10*time.Second)
-	c.Assert(err, check.IsNil)
+	waitForProcessEvent(c, svc, service.TeleportPhaseChangeEvent, 10*time.Second)
 
 	// update clients
 	err = svc.GetAuthServer().RotateCertAuthority(auth.RotateRequest{
@@ -3319,8 +3327,7 @@ func (s *IntSuite) TestRotateSuccess(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// wait until service reload
-	svc, err = waitForReload(serviceC, svc)
-	c.Assert(err, check.IsNil)
+	svc = waitForReload(c, serviceC, svc)
 
 	cfg := ClientConfig{
 		Login: s.me.Username,
@@ -3348,7 +3355,7 @@ func (s *IntSuite) TestRotateSuccess(c *check.C) {
 	l.Debugf("Cert authority: %v", auth.CertAuthorityInfo(hostCA))
 
 	// wait until service reloaded
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 
 	// new credentials will work from this phase to others
@@ -3376,7 +3383,7 @@ func (s *IntSuite) TestRotateSuccess(c *check.C) {
 	l.Debugf("Cert authority: %v", auth.CertAuthorityInfo(hostCA))
 
 	// wait until service reloaded
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 
 	// new client still works
@@ -3426,15 +3433,17 @@ func (s *IntSuite) TestRotateRollback(c *check.C) {
 	go func() {
 		runErrCh <- service.Run(ctx, *config, func(cfg *service.Config) (service.Process, error) {
 			svc, err := service.NewTeleport(cfg)
-			serviceC <- &svcStartResult{svc: svc, err: trace.Wrap(err)}
+			if err != nil {
+				err = errors.New(err.Error())
+			}
+			serviceC <- &svcStartResult{svc: svc, err: err}
 			return svc, trace.Wrap(err)
 		})
 	}()
 
 	l := log.WithFields(log.Fields{trace.Component: teleport.Component("test", "rotate")})
 
-	svc, err := waitForProcessStart(serviceC)
-	c.Assert(err, check.IsNil)
+	svc := waitForProcessStart(c, serviceC)
 
 	// Setup user in the cluster
 	err = SetupUser(svc, s.me.Username, nil)
@@ -3453,8 +3462,7 @@ func (s *IntSuite) TestRotateRollback(c *check.C) {
 	})
 	c.Assert(err, check.IsNil)
 
-	err = waitForProcessEvent(svc, service.TeleportPhaseChangeEvent, 10*time.Second)
-	c.Assert(err, check.IsNil)
+	waitForProcessEvent(c, svc, service.TeleportPhaseChangeEvent, 10*time.Second)
 
 	l.Infof("Setting rotation state to %v", services.RotationPhaseUpdateClients)
 
@@ -3466,7 +3474,7 @@ func (s *IntSuite) TestRotateRollback(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// wait until service reload
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 
 	cfg := ClientConfig{
@@ -3491,7 +3499,7 @@ func (s *IntSuite) TestRotateRollback(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// wait until service reloaded
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 
 	l.Infof("Service reloaded. Setting rotation state to %v.", services.RotationPhaseRollback)
@@ -3504,7 +3512,7 @@ func (s *IntSuite) TestRotateRollback(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// wait until service reloaded
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 
 	// old client works
@@ -3553,15 +3561,17 @@ func (s *IntSuite) TestRotateTrustedClusters(c *check.C) {
 	go func() {
 		runErrCh <- service.Run(ctx, *config, func(cfg *service.Config) (service.Process, error) {
 			svc, err := service.NewTeleport(cfg)
-			serviceC <- &svcStartResult{svc: svc, err: trace.Wrap(err)}
-			return svc, trace.Wrap(err)
+			if err != nil {
+				err = errors.New(err.Error())
+			}
+			serviceC <- &svcStartResult{svc: svc, err: err}
+			return svc, err
 		})
 	}()
 
 	l := log.WithFields(log.Fields{trace.Component: teleport.Component("test", "rotate")})
 
-	svc, err := waitForProcessStart(serviceC)
-	c.Assert(err, check.IsNil)
+	svc := waitForProcessStart(c, serviceC)
 
 	// main cluster has a local user and belongs to role "main-devs"
 	mainDevs := "main-devs"
@@ -3637,8 +3647,7 @@ func (s *IntSuite) TestRotateTrustedClusters(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// wait until service phase update to be broadcasted (init phase does not trigger reload)
-	err = waitForProcessEvent(svc, service.TeleportPhaseChangeEvent, 10*time.Second)
-	c.Assert(err, check.IsNil)
+	waitForProcessEvent(c, svc, service.TeleportPhaseChangeEvent, 10*time.Second)
 
 	// waitForPhase waits until aux cluster detects the rotation
 	waitForPhase := func(phase string) error {
@@ -3669,7 +3678,7 @@ func (s *IntSuite) TestRotateTrustedClusters(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// wait until service reloaded
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 
 	err = waitForPhase(services.RotationPhaseUpdateClients)
@@ -3689,7 +3698,7 @@ func (s *IntSuite) TestRotateTrustedClusters(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// wait until service reloaded
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 
 	err = waitForPhase(services.RotationPhaseUpdateServers)
@@ -3717,7 +3726,7 @@ func (s *IntSuite) TestRotateTrustedClusters(c *check.C) {
 
 	// wait until service reloaded
 	l.Infof("Wating for service reload")
-	svc, err = waitForReload(serviceC, svc)
+	svc = waitForReload(c, serviceC, svc)
 	c.Assert(err, check.IsNil)
 	l.Infof("Service reload completed, waiting for phase")
 
@@ -3784,13 +3793,18 @@ func (s *IntSuite) TestRotateChangeSigningAlg(c *check.C) {
 		go func() {
 			runErrCh <- service.Run(ctx, *config, func(cfg *service.Config) (service.Process, error) {
 				svc, err := service.NewTeleport(cfg)
-				serviceC <- &svcStartResult{svc: svc, err: trace.Wrap(err)}
+				if err != nil {
+					// Cannot use original error since it might
+					// be modified in trace.Wrap which might result
+					// in a data race
+					err = errors.New(err.Error())
+				}
+				serviceC <- &svcStartResult{svc: svc, err: err}
 				return svc, trace.Wrap(err)
 			})
 		}()
 
-		svc, err = waitForProcessStart(serviceC)
-		c.Assert(err, check.IsNil)
+		svc = waitForProcessStart(c, serviceC)
 		return svc, cancel
 	}
 
@@ -3813,8 +3827,7 @@ func (s *IntSuite) TestRotateChangeSigningAlg(c *check.C) {
 		c.Assert(err, check.IsNil)
 
 		// wait until service phase update to be broadcasted (init phase does not trigger reload)
-		err = waitForProcessEvent(svc, service.TeleportPhaseChangeEvent, 10*time.Second)
-		c.Assert(err, check.IsNil)
+		waitForProcessEvent(c, svc, service.TeleportPhaseChangeEvent, 10*time.Second)
 
 		c.Logf("rotation phase: %q", services.RotationPhaseUpdateClients)
 		err = svc.GetAuthServer().RotateCertAuthority(auth.RotateRequest{
@@ -3824,7 +3837,7 @@ func (s *IntSuite) TestRotateChangeSigningAlg(c *check.C) {
 		c.Assert(err, check.IsNil)
 
 		// wait until service reload
-		svc, err = waitForReload(serviceC, svc)
+		svc = waitForReload(c, serviceC, svc)
 		c.Assert(err, check.IsNil)
 
 		c.Logf("rotation phase: %q", services.RotationPhaseUpdateServers)
@@ -3835,7 +3848,7 @@ func (s *IntSuite) TestRotateChangeSigningAlg(c *check.C) {
 		c.Assert(err, check.IsNil)
 
 		// wait until service reloaded
-		svc, err = waitForReload(serviceC, svc)
+		svc = waitForReload(c, serviceC, svc)
 		c.Assert(err, check.IsNil)
 
 		c.Logf("rotation phase: %q", services.RotationPhaseStandby)
@@ -3846,7 +3859,7 @@ func (s *IntSuite) TestRotateChangeSigningAlg(c *check.C) {
 		c.Assert(err, check.IsNil)
 
 		// wait until service reloaded
-		svc, err = waitForReload(serviceC, svc)
+		svc = waitForReload(c, serviceC, svc)
 		c.Assert(err, check.IsNil)
 
 		return svc
@@ -3904,28 +3917,33 @@ func rotationConfig(disableWebService bool) *service.Config {
 }
 
 // waitForProcessEvent waits for process event to occur or timeout
-func waitForProcessEvent(svc *service.TeleportProcess, event string, timeout time.Duration) error {
+func waitForProcessEvent(c *check.C, svc *service.TeleportProcess, event string, timeout time.Duration) {
 	eventC := make(chan service.Event, 1)
 	svc.WaitForEvent(context.TODO(), event, eventC)
 	select {
 	case <-eventC:
-		return nil
+		return
 	case <-time.After(timeout):
-		return trace.BadParameter("timeout waiting for service to broadcast event %v", event)
+		// FIXME: dump goroutines for debugging
+		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		c.Fatalf("timeout waiting for service to broadcast event %v", event)
 	}
 }
 
 // waitForProcessStart is waiting for the process to start
-func waitForProcessStart(serviceC chan *svcStartResult) (*service.TeleportProcess, error) {
+func waitForProcessStart(c *check.C, serviceC chan *svcStartResult) *service.TeleportProcess {
 	select {
 	case result := <-serviceC:
 		if result.err != nil {
-			return nil, result.err
+			c.Fatal(result.err)
 		}
-		return result.svc, nil
+		return result.svc
 	case <-time.After(60 * time.Second):
-		return nil, trace.BadParameter("timeout waiting for service to start")
+		// FIXME: dump goroutines for debugging
+		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		c.Fatal("timeout waiting for service to start")
 	}
+	panic("unreachable")
 }
 
 // waitForReload waits for multiple events to happen:
@@ -3934,16 +3952,16 @@ func waitForProcessStart(serviceC chan *svcStartResult) (*service.TeleportProces
 // 2. old service, if present to shut down
 //
 // this helper function allows to serialize tests for reloads.
-func waitForReload(serviceC chan *svcStartResult, old *service.TeleportProcess) (*service.TeleportProcess, error) {
+func waitForReload(c *check.C, serviceC chan *svcStartResult, old *service.TeleportProcess) *service.TeleportProcess {
 	var svc *service.TeleportProcess
 	select {
 	case result := <-serviceC:
-		if result.err != nil {
-			return nil, result.err
-		}
+		c.Assert(result.err, check.IsNil)
 		svc = result.svc
 	case <-time.After(60 * time.Second):
-		return nil, trace.BadParameter("timeout waiting for service to start")
+		// FIXME: dump goroutines for debugging
+		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		c.Error("timeout waiting for service to start")
 	}
 
 	eventC := make(chan service.Event, 1)
@@ -3951,7 +3969,9 @@ func waitForReload(serviceC chan *svcStartResult, old *service.TeleportProcess) 
 	select {
 	case <-eventC:
 	case <-time.After(20 * time.Second):
-		return nil, trace.BadParameter("timeout waiting for service to broadcast ready status")
+		// FIXME: dump goroutines for debugging
+		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		c.Error("timeout waiting for service to broadcast ready status")
 	}
 
 	// if old service is present, wait for it to complete shut down procedure
@@ -3965,11 +3985,11 @@ func waitForReload(serviceC chan *svcStartResult, old *service.TeleportProcess) 
 		case <-ctx.Done():
 		case <-time.After(1 * time.Minute):
 			// FIXME: dump goroutines for debugging
-			pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
-			return nil, trace.BadParameter("timeout waiting for old service to stop")
+			pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+			c.Error("timeout waiting for old service to stop")
 		}
 	}
-	return svc, nil
+	return svc
 
 }
 
@@ -4086,6 +4106,8 @@ func (s *IntSuite) TestWindowChange(c *check.C) {
 					}
 				}
 			case <-timeoutCh:
+				// FIXME: dump goroutines for debugging
+				pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
 				return trace.BadParameter("timed out waiting for output, last output: %q doesn't contain any of the expected substrings: %q", t.Output(5000), outputs)
 			}
 		}
@@ -4701,6 +4723,8 @@ func (s *IntSuite) TestBPFSessionDifferentiation(c *check.C) {
 				break
 			}
 		case <-timeout:
+			// FIXME: dump goroutines for debugging
+			pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
 			c.Fatalf("Timed out waiting for client to finish interactive session.")
 		}
 	}
@@ -4937,14 +4961,16 @@ func (t *Terminal) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
-// waitFor helper waits on a challen for up to the given timeout
-func waitFor(c chan interface{}, timeout time.Duration) error {
+// waitFor helper waits on a challenge for up to the given timeout
+func waitFor(c *check.C, ch chan interface{}, timeout time.Duration) {
 	tick := time.Tick(timeout)
 	select {
-	case <-c:
-		return nil
+	case <-ch:
+		return
 	case <-tick:
-		return fmt.Errorf("timeout waiting for event")
+		// FIXME: dump goroutines for debugging
+		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		c.Fatal("Timeout waiting for event.")
 	}
 }
 
