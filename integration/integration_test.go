@@ -424,7 +424,7 @@ func (s *IntSuite) TestAuditOn(c *check.C) {
 				break loop
 			case <-timeoutC:
 				// FIXME: dump goroutines for debugging
-				pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+				pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 				c.Fatalf("Timeout waiting for upload of session %v to complete to %v", session.ID, tt.auditSessionsURI)
 			}
 		}
@@ -1120,7 +1120,7 @@ func (s *IntSuite) runDisconnectTest(c *check.C, tc disconnectTestCase) {
 	select {
 	case <-time.After(tc.disconnectTimeout + time.Second):
 		// FIXME: dump goroutines for debugging
-		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 		c.Fatalf("%s: timeout waiting for session to exit: %+v", timeNow(), tc)
 	case <-ctx.Done():
 		// session closed.  a test case is successful if the first
@@ -3246,7 +3246,7 @@ func (s *IntSuite) TestPAM(c *check.C) {
 		select {
 		case <-time.After(10 * time.Second):
 			// FIXME: dump goroutines for debugging
-			pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+			pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 			c.Fatalf("Timeout exceeded waiting for session to complete.")
 		case <-ctx.Done():
 		}
@@ -3926,7 +3926,7 @@ func waitForProcessEvent(c *check.C, svc *service.TeleportProcess, event string,
 		return
 	case <-time.After(timeout):
 		// FIXME: dump goroutines for debugging
-		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 		c.Fatalf("timeout waiting for service to broadcast event %v", event)
 	}
 }
@@ -3941,7 +3941,7 @@ func waitForProcessStart(c *check.C, serviceC chan *svcStartResult) *service.Tel
 		return result.svc
 	case <-time.After(60 * time.Second):
 		// FIXME: dump goroutines for debugging
-		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 		c.Fatal("timeout waiting for service to start")
 	}
 	panic("unreachable")
@@ -3959,9 +3959,9 @@ func waitForReload(c *check.C, serviceC chan *svcStartResult, old *service.Telep
 	case result := <-serviceC:
 		c.Assert(result.err, check.IsNil)
 		svc = result.svc
-	case <-time.After(60 * time.Second):
+	case <-time.After(1 * time.Second):
 		// FIXME: dump goroutines for debugging
-		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 		c.Error("timeout waiting for service to start")
 	}
 
@@ -3971,7 +3971,7 @@ func waitForReload(c *check.C, serviceC chan *svcStartResult, old *service.Telep
 	case <-eventC:
 	case <-time.After(20 * time.Second):
 		// FIXME: dump goroutines for debugging
-		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 		c.Error("timeout waiting for service to broadcast ready status")
 	}
 
@@ -3986,7 +3986,7 @@ func waitForReload(c *check.C, serviceC chan *svcStartResult, old *service.Telep
 		case <-ctx.Done():
 		case <-time.After(1 * time.Minute):
 			// FIXME: dump goroutines for debugging
-			pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+			pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 			c.Error("timeout waiting for old service to stop")
 		}
 	}
@@ -4108,7 +4108,7 @@ func (s *IntSuite) TestWindowChange(c *check.C) {
 				}
 			case <-timeoutCh:
 				// FIXME: dump goroutines for debugging
-				pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+				pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 				return trace.BadParameter("timed out waiting for output, last output: %q doesn't contain any of the expected substrings: %q", t.Output(5000), outputs)
 			}
 		}
@@ -4725,7 +4725,7 @@ func (s *IntSuite) TestBPFSessionDifferentiation(c *check.C) {
 			}
 		case <-timeout:
 			// FIXME: dump goroutines for debugging
-			pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+			pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 			c.Fatalf("Timed out waiting for client to finish interactive session.")
 		}
 	}
@@ -4970,7 +4970,7 @@ func waitFor(c *check.C, ch chan interface{}, timeout time.Duration) {
 		return
 	case <-tick:
 		// FIXME: dump goroutines for debugging
-		pprof.Lookup("goroutine").WriteTo(newTestWriter(c), 1)
+		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 		c.Fatal("Timeout waiting for event.")
 	}
 }
