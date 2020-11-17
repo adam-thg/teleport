@@ -301,7 +301,7 @@ func (s *IntSuite) TestAuditOn(c *check.C) {
 			return c, nil, nil, tconf
 		}
 		t := s.newTeleportWithConfig(makeConfig())
-		defer t.StopAll()
+		defer t.StopAll(c)
 
 		// Start a node.
 		nodeSSHPort := s.getPorts(1)[0]
@@ -581,7 +581,7 @@ func (s *IntSuite) TestInteroperability(c *check.C) {
 
 	// create new teleport server that will be used by all tests
 	t := s.newTeleport(c, nil, true)
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	var tests = []struct {
 		inCommand   string
@@ -659,7 +659,7 @@ func (s *IntSuite) TestUUIDBasedProxy(c *check.C) {
 	defer tr.Stop()
 
 	t := s.newTeleport(c, nil, true)
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	site := t.GetSiteAPI(Site)
 
@@ -726,8 +726,8 @@ func (s *IntSuite) TestUUIDBasedProxy(c *check.C) {
 	// attempting to run a command by hostname should generate NodeIsAmbiguous error.
 	_, err = runCommand(t, []string{"echo", "Hello there!"}, ClientConfig{Login: s.me.Username, Cluster: Site, Host: Host}, 1)
 	c.Assert(err, check.NotNil)
-	if !strings.Contains(err.Error(), teleport.NodeIsAmbiguous) {
-		c.Fatalf("Expected %s, got %s", teleport.NodeIsAmbiguous, err.Error())
+	if !strings.Contains(trace.UserMessage(err), teleport.NodeIsAmbiguous) {
+		c.Fatalf("Expected %s, got %s", teleport.NodeIsAmbiguous, trace.UserMessage(err))
 	}
 
 	// attempting to run a command by uuid should succeed.
@@ -742,7 +742,7 @@ func (s *IntSuite) TestInteractiveRegular(c *check.C) {
 	defer tr.Stop()
 
 	t := s.newTeleport(c, nil, true)
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	s.verifySessionJoin(c, t)
 }
@@ -758,7 +758,7 @@ func (s *IntSuite) TestInteractiveReverseTunnel(c *check.C) {
 	defer lib.SetInsecureDevMode(false)
 
 	t := s.newTeleportIoT(c, nil)
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	s.verifySessionJoin(c, t)
 }
@@ -1037,6 +1037,8 @@ func (s *IntSuite) TestDisconnectScenarios(c *check.C) {
 
 func (s *IntSuite) runDisconnectTest(c *check.C, tc disconnectTestCase) {
 	t := s.newTeleportInstance(c)
+	defer t.StopAll(c)
+
 	comment := check.Commentf(tc.comment)
 
 	username := s.me.Username
@@ -1066,7 +1068,6 @@ func (s *IntSuite) runDisconnectTest(c *check.C, tc disconnectTestCase) {
 
 	c.Assert(t.CreateEx(nil, cfg), check.IsNil, comment)
 	c.Assert(t.Start(), check.IsNil, comment)
-	defer t.StopAll()
 
 	// get a reference to site obj:
 	site := t.GetSiteAPI(Site)
@@ -1095,7 +1096,6 @@ func (s *IntSuite) runDisconnectTest(c *check.C, tc disconnectTestCase) {
 			case <-ctx.Done():
 				// either we timed out, or a different session
 				// triggered closure.
-				c.Logf("Abort session: %v", timeNow())
 				return
 			default:
 			}
@@ -1104,7 +1104,6 @@ func (s *IntSuite) runDisconnectTest(c *check.C, tc disconnectTestCase) {
 			} else if err != nil && !trace.IsEOF(err) {
 				c.Fatalf("%s: expected EOF or nil, got %v instead", tc.comment, err)
 			}
-			c.Logf("Close session: %v", timeNow())
 		}
 
 		go openSession()
@@ -1121,15 +1120,11 @@ func (s *IntSuite) runDisconnectTest(c *check.C, tc disconnectTestCase) {
 	case <-time.After(tc.disconnectTimeout + time.Second):
 		// FIXME: dump goroutines for debugging
 		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
-		c.Fatalf("%s: timeout waiting for session to exit: %+v", timeNow(), tc)
+		c.Fatalf("Timeout waiting for session to exit: %+v", tc)
 	case <-ctx.Done():
 		// session closed.  a test case is successful if the first
 		// session to close encountered the expected error variant.
 	}
-}
-
-func timeNow() string {
-	return time.Now().Format(time.StampMilli)
 }
 
 func enterInput(ctx context.Context, c *check.C, person *Terminal, command, pattern string) {
@@ -1163,7 +1158,7 @@ func (s *IntSuite) TestEnvironmentVariables(c *check.C) {
 	defer tr.Stop()
 
 	t := s.newTeleport(c, nil, true)
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	testKey, testVal := "TELEPORT_TEST_ENV", "howdy"
 	cmd := []string{"printenv", testKey}
@@ -1189,7 +1184,7 @@ func (s *IntSuite) TestInvalidLogins(c *check.C) {
 	defer tr.Stop()
 
 	t := s.newTeleport(c, nil, true)
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	cmd := []string{"echo", "success"}
 
@@ -1239,182 +1234,183 @@ func (s *IntSuite) TestTwoClustersTunnel(c *check.C) {
 	}
 
 	for _, tt := range tests {
-		// start the http proxy, we need to make sure this was not used
-		ps := &proxyServer{}
-		ts := httptest.NewServer(ps)
-		defer ts.Close()
+		func() {
+			// start the http proxy, we need to make sure this was not used
+			ps := &proxyServer{}
+			ts := httptest.NewServer(ps)
+			defer ts.Close()
 
-		// clear out any proxy environment variables
-		for _, v := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"} {
-			os.Setenv(v, "")
-		}
-
-		username := s.me.Username
-
-		a := s.newNamedTeleportInstance(c, "site-A")
-		b := s.newNamedTeleportInstance(c, "site-B")
-
-		a.AddUser(username, []string{username})
-		b.AddUser(username, []string{username})
-
-		clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
-			SessionRecording: tt.inRecordLocation,
-			LocalAuth:        services.NewBool(true),
-		})
-		c.Assert(err, check.IsNil)
-
-		acfg := service.MakeDefaultConfig()
-		acfg.Auth.Enabled = true
-		acfg.Proxy.Enabled = true
-		acfg.Proxy.DisableWebService = true
-		acfg.Proxy.DisableWebInterface = true
-		acfg.SSH.Enabled = true
-
-		bcfg := service.MakeDefaultConfig()
-		bcfg.Auth.Enabled = true
-		bcfg.Auth.ClusterConfig = clusterConfig
-		bcfg.Proxy.Enabled = true
-		bcfg.Proxy.DisableWebService = true
-		bcfg.Proxy.DisableWebInterface = true
-		bcfg.SSH.Enabled = false
-
-		c.Assert(b.CreateEx(a.Secrets.AsSlice(), bcfg), check.IsNil)
-		c.Assert(a.CreateEx(b.Secrets.AsSlice(), acfg), check.IsNil)
-
-		c.Assert(b.Start(), check.IsNil)
-		c.Assert(a.Start(), check.IsNil)
-
-		// wait for both sites to see each other via their reverse tunnels (for up to 10 seconds)
-		abortTime := time.Now().Add(time.Second * 10)
-		for len(checkGetClusters(c, a.Tunnel)) < 2 && len(checkGetClusters(c, b.Tunnel)) < 2 {
-			time.Sleep(time.Millisecond * 200)
-			if time.Now().After(abortTime) {
-				c.Fatalf("Two clusters do not see each other: tunnels are not working.")
+			// clear out any proxy environment variables
+			for _, v := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"} {
+				os.Setenv(v, "")
 			}
-		}
 
-		var (
-			outputA bytes.Buffer
-			outputB bytes.Buffer
-		)
+			username := s.me.Username
 
-		// make sure the direct dialer was used and not the proxy dialer
-		c.Assert(ps.Count(), check.Equals, 0)
+			a := s.newNamedTeleportInstance(c, "site-A")
+			defer a.StopAll(c)
+			b := s.newNamedTeleportInstance(c, "site-B")
+			defer b.StopAll(c)
 
-		// if we got here, it means two sites are cross-connected. lets execute SSH commands
-		sshPort := a.GetPortSSHInt()
-		cmd := []string{"echo", "hello world"}
+			a.AddUser(username, []string{username})
+			b.AddUser(username, []string{username})
 
-		// directly:
-		tc, err := a.NewClient(ClientConfig{
-			Login:        username,
-			Cluster:      a.Secrets.SiteName,
-			Host:         Host,
-			Port:         sshPort,
-			ForwardAgent: true,
-		})
-		tc.Stdout = &outputA
-		c.Assert(err, check.IsNil)
-		err = tc.SSH(context.TODO(), cmd, false)
-		c.Assert(err, check.IsNil)
-		c.Assert(outputA.String(), check.Equals, "hello world\n")
+			clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
+				SessionRecording: tt.inRecordLocation,
+				LocalAuth:        services.NewBool(true),
+			})
+			c.Assert(err, check.IsNil)
 
-		// Update trusted CAs.
-		err = tc.UpdateTrustedCA(context.TODO(), a.Secrets.SiteName)
-		c.Assert(err, check.IsNil)
+			acfg := service.MakeDefaultConfig()
+			acfg.Auth.Enabled = true
+			acfg.Proxy.Enabled = true
+			acfg.Proxy.DisableWebService = true
+			acfg.Proxy.DisableWebInterface = true
+			acfg.SSH.Enabled = true
 
-		// The known_hosts file should have two certificates, the way bytes.Split
-		// works that means the output will be 3 (2 certs + 1 empty).
-		buffer, err := ioutil.ReadFile(filepath.Join(tc.KeysDir, "known_hosts"))
-		c.Assert(err, check.IsNil)
-		parts := bytes.Split(buffer, []byte("\n"))
-		c.Assert(parts, check.HasLen, 3)
+			bcfg := service.MakeDefaultConfig()
+			bcfg.Auth.Enabled = true
+			bcfg.Auth.ClusterConfig = clusterConfig
+			bcfg.Proxy.Enabled = true
+			bcfg.Proxy.DisableWebService = true
+			bcfg.Proxy.DisableWebInterface = true
+			bcfg.SSH.Enabled = false
 
-		// The certs.pem file should have 2 certificates.
-		buffer, err = ioutil.ReadFile(filepath.Join(tc.KeysDir, "keys", Host, "certs.pem"))
-		c.Assert(err, check.IsNil)
-		roots := x509.NewCertPool()
-		ok := roots.AppendCertsFromPEM(buffer)
-		c.Assert(ok, check.Equals, true)
-		c.Assert(roots.Subjects(), check.HasLen, 2)
+			c.Assert(b.CreateEx(a.Secrets.AsSlice(), bcfg), check.IsNil)
+			c.Assert(a.CreateEx(b.Secrets.AsSlice(), acfg), check.IsNil)
 
-		// wait for active tunnel connections to be established
-		waitForActiveTunnelConnections(c, b.Tunnel, a.Secrets.SiteName, 1)
+			c.Assert(b.Start(), check.IsNil)
+			c.Assert(a.Start(), check.IsNil)
 
-		// via tunnel b->a:
-		tc, err = b.NewClient(ClientConfig{
-			Login:        username,
-			Cluster:      a.Secrets.SiteName,
-			Host:         Host,
-			Port:         sshPort,
-			ForwardAgent: true,
-		})
-		tc.Stdout = &outputB
-		c.Assert(err, check.IsNil)
-		err = tc.SSH(context.TODO(), cmd, false)
-		c.Assert(err, check.IsNil)
-		c.Assert(outputA.String(), check.DeepEquals, outputB.String())
-
-		// Stop "site-A" and try to connect to it again via "site-A" (expect a connection error)
-		err = a.StopAuth(false)
-		c.Assert(err, check.IsNil)
-		err = tc.SSH(context.TODO(), cmd, false)
-		c.Assert(err, check.FitsTypeOf, trace.ConnectionProblem(nil, ""))
-
-		// Reset and start "Site-A" again
-		err = a.Reset()
-		c.Assert(err, check.IsNil)
-		err = a.Start()
-		c.Assert(err, check.IsNil)
-
-		// try to execute an SSH command using the same old client to Site-B
-		// "site-A" and "site-B" reverse tunnels are supposed to reconnect,
-		// and 'tc' (client) is also supposed to reconnect
-		for i := 0; i < 10; i++ {
-			time.Sleep(250 * time.Millisecond)
-			err = tc.SSH(context.TODO(), cmd, false)
-			if err == nil {
-				break
-			}
-		}
-		c.Assert(err, check.IsNil)
-
-		searchAndAssert := func(site auth.ClientI, count int) error {
-			tickCh := time.Tick(500 * time.Millisecond)
-			stopCh := time.After(5 * time.Second)
-
-			// only look for exec events
-			execQuery := fmt.Sprintf("%s=%s", events.EventType, events.ExecEvent)
-
-			for {
-				select {
-				case <-tickCh:
-					eventsInSite, err := site.SearchEvents(now, now.Add(1*time.Hour), execQuery, 0)
-					if err != nil {
-						return trace.Wrap(err)
-					}
-
-					// found the number of events we were looking for
-					if got, want := len(eventsInSite), count; got == want {
-						return nil
-					}
-				case <-stopCh:
-					return trace.BadParameter("unable to find %v events after 5s", count)
+			// wait for both sites to see each other via their reverse tunnels (for up to 10 seconds)
+			abortTime := time.Now().Add(time.Second * 10)
+			for len(checkGetClusters(c, a.Tunnel)) < 2 && len(checkGetClusters(c, b.Tunnel)) < 2 {
+				time.Sleep(time.Millisecond * 200)
+				if time.Now().After(abortTime) {
+					c.Fatalf("Two clusters do not see each other: tunnels are not working.")
 				}
 			}
-		}
 
-		siteA := a.GetSiteAPI(a.Secrets.SiteName)
-		err = searchAndAssert(siteA, tt.outExecCountSiteA)
-		c.Assert(err, check.IsNil)
+			var (
+				outputA bytes.Buffer
+				outputB bytes.Buffer
+			)
 
-		siteB := b.GetSiteAPI(b.Secrets.SiteName)
-		err = searchAndAssert(siteB, tt.outExecCountSiteB)
-		c.Assert(err, check.IsNil)
+			// make sure the direct dialer was used and not the proxy dialer
+			c.Assert(ps.Count(), check.Equals, 0)
 
-		// stop both sites for real
-		c.Assert(b.StopAll(), check.IsNil)
-		c.Assert(a.StopAll(), check.IsNil)
+			// if we got here, it means two sites are cross-connected. lets execute SSH commands
+			sshPort := a.GetPortSSHInt()
+			cmd := []string{"echo", "hello world"}
+
+			// directly:
+			tc, err := a.NewClient(ClientConfig{
+				Login:        username,
+				Cluster:      a.Secrets.SiteName,
+				Host:         Host,
+				Port:         sshPort,
+				ForwardAgent: true,
+			})
+			tc.Stdout = &outputA
+			c.Assert(err, check.IsNil)
+			err = tc.SSH(context.TODO(), cmd, false)
+			c.Assert(err, check.IsNil)
+			c.Assert(outputA.String(), check.Equals, "hello world\n")
+
+			// Update trusted CAs.
+			err = tc.UpdateTrustedCA(context.TODO(), a.Secrets.SiteName)
+			c.Assert(err, check.IsNil)
+
+			// The known_hosts file should have two certificates, the way bytes.Split
+			// works that means the output will be 3 (2 certs + 1 empty).
+			buffer, err := ioutil.ReadFile(filepath.Join(tc.KeysDir, "known_hosts"))
+			c.Assert(err, check.IsNil)
+			parts := bytes.Split(buffer, []byte("\n"))
+			c.Assert(parts, check.HasLen, 3)
+
+			// The certs.pem file should have 2 certificates.
+			buffer, err = ioutil.ReadFile(filepath.Join(tc.KeysDir, "keys", Host, "certs.pem"))
+			c.Assert(err, check.IsNil)
+			roots := x509.NewCertPool()
+			ok := roots.AppendCertsFromPEM(buffer)
+			c.Assert(ok, check.Equals, true)
+			c.Assert(roots.Subjects(), check.HasLen, 2)
+
+			// wait for active tunnel connections to be established
+			waitForActiveTunnelConnections(c, b.Tunnel, a.Secrets.SiteName, 1)
+
+			// via tunnel b->a:
+			tc, err = b.NewClient(ClientConfig{
+				Login:        username,
+				Cluster:      a.Secrets.SiteName,
+				Host:         Host,
+				Port:         sshPort,
+				ForwardAgent: true,
+			})
+			tc.Stdout = &outputB
+			c.Assert(err, check.IsNil)
+			err = tc.SSH(context.TODO(), cmd, false)
+			c.Assert(err, check.IsNil)
+			c.Assert(outputA.String(), check.DeepEquals, outputB.String())
+
+			// Stop "site-A" and try to connect to it again via "site-A" (expect a connection error)
+			err = a.StopAuth(false)
+			c.Assert(err, check.IsNil)
+			err = tc.SSH(context.TODO(), cmd, false)
+			c.Assert(err, check.FitsTypeOf, trace.ConnectionProblem(nil, ""))
+
+			// Reset and start "Site-A" again
+			err = a.Reset()
+			c.Assert(err, check.IsNil)
+			err = a.Start()
+			c.Assert(err, check.IsNil)
+
+			// try to execute an SSH command using the same old client to Site-B
+			// "site-A" and "site-B" reverse tunnels are supposed to reconnect,
+			// and 'tc' (client) is also supposed to reconnect
+			for i := 0; i < 10; i++ {
+				time.Sleep(250 * time.Millisecond)
+				err = tc.SSH(context.TODO(), cmd, false)
+				if err == nil {
+					break
+				}
+			}
+			c.Assert(err, check.IsNil)
+
+			searchAndAssert := func(site auth.ClientI, count int) error {
+				tickCh := time.Tick(500 * time.Millisecond)
+				stopCh := time.After(5 * time.Second)
+
+				// only look for exec events
+				execQuery := fmt.Sprintf("%s=%s", events.EventType, events.ExecEvent)
+
+				for {
+					select {
+					case <-tickCh:
+						eventsInSite, err := site.SearchEvents(now, now.Add(1*time.Hour), execQuery, 0)
+						if err != nil {
+							return trace.Wrap(err)
+						}
+
+						// found the number of events we were looking for
+						if got, want := len(eventsInSite), count; got == want {
+							return nil
+						}
+					case <-stopCh:
+						return trace.BadParameter("unable to find %v events after 5s", count)
+					}
+				}
+			}
+
+			siteA := a.GetSiteAPI(a.Secrets.SiteName)
+			err = searchAndAssert(siteA, tt.outExecCountSiteA)
+			c.Assert(err, check.IsNil)
+
+			siteB := b.GetSiteAPI(b.Secrets.SiteName)
+			err = searchAndAssert(siteB, tt.outExecCountSiteB)
+			c.Assert(err, check.IsNil)
+
+		}()
 	}
 }
 
@@ -1438,7 +1434,9 @@ func (s *IntSuite) TestTwoClustersProxy(c *check.C) {
 	username := s.me.Username
 
 	a := s.newNamedTeleportInstance(c, "site-A")
+	defer a.StopAll(c)
 	b := s.newNamedTeleportInstance(c, "site-B")
+	defer b.StopAll(c)
 
 	a.AddUser(username, []string{username})
 	b.AddUser(username, []string{username})
@@ -1460,10 +1458,6 @@ func (s *IntSuite) TestTwoClustersProxy(c *check.C) {
 
 	// make sure the reverse tunnel went through the proxy
 	c.Assert(ps.Count() > 0, check.Equals, true, check.Commentf("proxy did not intercept any connection"))
-
-	// stop both sites for real
-	c.Assert(b.StopAll(), check.IsNil)
-	c.Assert(a.StopAll(), check.IsNil)
 }
 
 // TestHA tests scenario when auth server for the cluster goes down
@@ -1475,7 +1469,9 @@ func (s *IntSuite) TestHA(c *check.C) {
 	username := s.me.Username
 
 	a := s.newNamedTeleportInstance(c, "cluster-a")
+	defer a.StopAll(c)
 	b := s.newNamedTeleportInstance(c, "cluster-b")
+	defer b.StopAll(c)
 
 	a.AddUser(username, []string{username})
 	b.AddUser(username, []string{username})
@@ -1536,10 +1532,6 @@ func (s *IntSuite) TestHA(c *check.C) {
 		}
 	}
 	c.Assert(err, check.IsNil)
-
-	// stop cluster and remaining nodes
-	c.Assert(a.StopAll(), check.IsNil)
-	c.Assert(b.StopAll(), check.IsNil)
 }
 
 // TestMapRoles tests local to remote role mapping and access patterns
@@ -1554,7 +1546,9 @@ func (s *IntSuite) TestMapRoles(c *check.C) {
 	clusterAux := "cluster-aux"
 
 	main := s.newNamedTeleportInstance(c, clusterMain)
+	defer main.StopAll(c)
 	aux := s.newNamedTeleportInstance(c, clusterAux)
+	defer aux.StopAll(c)
 
 	// main cluster has a local user and belongs to role "main-devs"
 	mainDevs := "main-devs"
@@ -1736,9 +1730,6 @@ func (s *IntSuite) TestMapRoles(c *check.C) {
 		}
 	}
 
-	// stop clusters and remaining nodes
-	c.Assert(main.StopAll(), check.IsNil)
-	c.Assert(aux.StopAll(), check.IsNil)
 }
 
 // tryCreateTrustedCluster performs several attempts to create a trusted cluster,
@@ -1932,13 +1923,9 @@ func (s *IntSuite) trustedClusters(c *check.C, test trustedClusterTest) {
 	trustedCluster.SetName(main.Secrets.SiteName + "-cluster")
 
 	c.Assert(main.Start(), check.IsNil)
-	defer func() {
-		c.Assert(main.StopAll(), check.IsNil)
-	}()
+	defer main.StopAll(c)
 	c.Assert(aux.Start(), check.IsNil)
-	defer func() {
-		c.Assert(aux.StopAll(), check.IsNil)
-	}()
+	defer aux.StopAll(c)
 
 	err = trustedCluster.CheckAndSetDefaults()
 	c.Assert(err, check.IsNil)
@@ -2105,7 +2092,9 @@ func (s *IntSuite) TestTrustedTunnelNode(c *check.C) {
 	clusterMain := "cluster-main"
 	clusterAux := "cluster-aux"
 	main := s.newNamedTeleportInstance(c, clusterMain)
+	defer main.StopAll(c)
 	aux := s.newNamedTeleportInstance(c, clusterAux)
+	defer aux.StopAll(c)
 
 	// main cluster has a local user and belongs to role "main-devs"
 	mainDevs := "main-devs"
@@ -2245,10 +2234,6 @@ func (s *IntSuite) TestTrustedTunnelNode(c *check.C) {
 	}
 	c.Assert(err, check.IsNil)
 	c.Assert(tunnelOutput.String(), check.Equals, "hello world\n")
-
-	// Stop clusters and remaining nodes.
-	c.Assert(main.StopAll(), check.IsNil)
-	c.Assert(aux.StopAll(), check.IsNil)
 }
 
 // TestDiscoveryRecovers ensures that discovery protocol recovers from a bad discovery
@@ -2268,7 +2253,9 @@ func (s *IntSuite) TestDiscoveryRecovers(c *check.C) {
 	defer lb.Close()
 
 	remote := s.newNamedTeleportInstance(c, "cluster-remote")
+	defer remote.StopAll(c)
 	main := s.newNamedTeleportInstance(c, "cluster-main")
+	defer main.StopAll(c)
 
 	remote.AddUser(username, []string{username})
 	main.AddUser(username, []string{username})
@@ -2381,10 +2368,6 @@ func (s *IntSuite) TestDiscoveryRecovers(c *check.C) {
 		c.Assert(waitForProxyCount(remote, "cluster-main", 1), check.IsNil)
 		testProxyConn(&cn, false)
 	}
-
-	// Stop both clusters and remaining nodes.
-	c.Assert(remote.StopAll(), check.IsNil)
-	c.Assert(main.StopAll(), check.IsNil)
 }
 
 // TestDiscovery tests case for multiple proxies and a reverse tunnel
@@ -2404,7 +2387,9 @@ func (s *IntSuite) TestDiscovery(c *check.C) {
 	defer lb.Close()
 
 	remote := s.newNamedTeleportInstance(c, "cluster-remote")
+	defer remote.StopAll(c)
 	main := s.newNamedTeleportInstance(c, "cluster-main")
+	defer main.StopAll(c)
 
 	remote.AddUser(username, []string{username})
 	main.AddUser(username, []string{username})
@@ -2509,10 +2494,6 @@ func (s *IntSuite) TestDiscovery(c *check.C) {
 
 	// Wait for the remote cluster to detect the outbound connection is gone.
 	c.Assert(waitForProxyCount(remote, "cluster-main", 1), check.IsNil)
-
-	// Stop both clusters and remaining nodes.
-	c.Assert(remote.StopAll(), check.IsNil)
-	c.Assert(main.StopAll(), check.IsNil)
 }
 
 // TestDiscoveryNode makes sure the discovery protocol works with nodes.
@@ -2554,7 +2535,7 @@ func (s *IntSuite) TestDiscoveryNode(c *check.C) {
 		return c, nil, nil, tconf
 	}
 	main := s.newTeleportWithConfig(mainConfig())
-	defer main.StopAll()
+	defer main.StopAll(c)
 
 	// Create a Teleport instance with a Proxy.
 	nodePorts := s.getPorts(3)
@@ -2567,6 +2548,9 @@ func (s *IntSuite) TestDiscoveryNode(c *check.C) {
 	}
 	proxyTunnel, err := main.StartProxy(proxyConfig)
 	c.Assert(err, check.IsNil)
+	defer func() {
+		c.Assert(proxyTunnel.Shutdown(context.Background()), check.IsNil)
+	}()
 
 	proxyOneBackend := utils.MustParseAddr(net.JoinHostPort(Loopback, main.GetPortReverseTunnel()))
 	lb.AddBackend(*proxyOneBackend)
@@ -2650,12 +2634,6 @@ func (s *IntSuite) TestDiscoveryNode(c *check.C) {
 	output, err = runCommand(main, []string{"echo", "hello world"}, cfgProxy, 40)
 	c.Assert(err, check.IsNil)
 	c.Assert(output, check.Equals, "hello world\n")
-
-	// Stop everything.
-	err = proxyTunnel.Shutdown(context.Background())
-	c.Assert(err, check.IsNil)
-	err = main.StopAll()
-	c.Assert(err, check.IsNil)
 }
 
 // waitForActiveTunnelConnections  waits for remote cluster to report a minimum number of active connections
@@ -2815,7 +2793,7 @@ func (s *IntSuite) TestExternalClient(c *check.C) {
 			return c, nil, nil, tconf
 		}
 		t := s.newTeleportWithConfig(makeConfig())
-		defer t.StopAll()
+		defer t.StopAll(c)
 
 		// Start (and defer close) a agent that runs during this integration test.
 		teleAgent, socketDirPath, socketPath, err := createAgent(
@@ -2908,7 +2886,7 @@ func (s *IntSuite) TestControlMaster(c *check.C) {
 			return c, nil, nil, tconf
 		}
 		t := s.newTeleportWithConfig(makeConfig())
-		defer t.StopAll()
+		defer t.StopAll(c)
 
 		// Start (and defer close) a agent that runs during this integration test.
 		teleAgent, socketDirPath, socketPath, err := createAgent(
@@ -3005,7 +2983,7 @@ func (s *IntSuite) TestProxyHostKeyCheck(c *check.C) {
 			return c, nil, nil, tconf
 		}
 		t := s.newTeleportWithConfig(makeConfig())
-		defer t.StopAll()
+		defer t.StopAll(c)
 
 		// create a teleport client and exec a command
 		clientConfig := ClientConfig{
@@ -3056,7 +3034,7 @@ func (s *IntSuite) TestAuditOff(c *check.C) {
 		return c, nil, nil, tconf
 	}
 	t := s.newTeleportWithConfig(makeConfig())
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	// get access to a authClient for the cluster
 	site := t.GetSiteAPI(Site)
@@ -3217,7 +3195,7 @@ func (s *IntSuite) TestPAM(c *check.C) {
 			return c, nil, nil, tconf
 		}
 		t := s.newTeleportWithConfig(makeConfig())
-		defer t.StopAll()
+		defer t.StopAll(c)
 
 		termSession := NewTerminal(250)
 
@@ -3548,7 +3526,9 @@ func (s *IntSuite) TestRotateTrustedClusters(c *check.C) {
 
 	tconf := rotationConfig(false)
 	main := s.newNamedTeleportInstance(c, clusterMain)
+	defer main.StopAll(c)
 	aux := s.newNamedTeleportInstance(c, clusterAux)
+	defer aux.StopAll(c)
 
 	logins := []string{s.me.Username}
 	for _, login := range logins {
@@ -3752,8 +3732,6 @@ func (s *IntSuite) TestRotateTrustedClusters(c *check.C) {
 	case <-time.After(20 * time.Second):
 		c.Fatalf("failed to shut down the server")
 	}
-
-	c.Assert(aux.StopAll(), check.IsNil)
 }
 
 // TestRotateChangeSigningAlg tests the change of CA signing algorithm on
@@ -3959,7 +3937,7 @@ func waitForReload(c *check.C, serviceC chan *svcStartResult, old *service.Telep
 	case result := <-serviceC:
 		c.Assert(result.err, check.IsNil)
 		svc = result.svc
-	case <-time.After(1 * time.Second):
+	case <-time.After(1 * time.Minute):
 		// FIXME: dump goroutines for debugging
 		pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
 		c.Fatal("Timeout waiting for service to start.")
@@ -4024,7 +4002,7 @@ func (s *IntSuite) TestWindowChange(c *check.C) {
 	defer tr.Stop()
 
 	t := s.newTeleport(c, nil, true)
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	site := t.GetSiteAPI(Site)
 	c.Assert(site, check.NotNil)
@@ -4167,7 +4145,7 @@ func (s *IntSuite) TestList(c *check.C) {
 		return c, nil, nil, tconf
 	}
 	t := s.newTeleportWithConfig(makeConfig())
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	// Create and start a Teleport node.
 	nodeSSHPort := s.getPorts(1)[0]
@@ -4312,7 +4290,7 @@ func (s *IntSuite) TestCmdLabels(c *check.C) {
 		return tconf
 	}
 	t := s.newTeleportWithConfig(c, nil, nil, makeConfig())
-	defer t.StopAll()
+	defer t.StopAll(c)
 
 	// Create and start a reversetunnel node.
 	nodeConfig := func() *service.Config {
@@ -4376,7 +4354,7 @@ func (s *IntSuite) TestDataTransfer(c *check.C) {
 
 	// Create a Teleport cluster.
 	main := s.newTeleport(c, nil, true)
-	defer main.StopAll()
+	defer main.StopAll(c)
 
 	// Create a client to the above Teleport cluster.
 	clientConfig := ClientConfig{
@@ -4480,7 +4458,7 @@ func (s *IntSuite) TestBPFInteractive(c *check.C) {
 			return c, nil, nil, tconf
 		}
 		main := s.newTeleportWithConfig(makeConfig())
-		defer main.StopAll()
+		defer main.StopAll(c)
 
 		// Create a client terminal and context to signal when the client is done
 		// with the terminal.
@@ -4605,7 +4583,7 @@ func (s *IntSuite) TestBPFExec(c *check.C) {
 			return c, nil, nil, tconf
 		}
 		main := s.newTeleportWithConfig(makeConfig())
-		defer main.StopAll()
+		defer main.StopAll(c)
 
 		// Create a client to the above Teleport cluster.
 		clientConfig := ClientConfig{
@@ -4682,7 +4660,7 @@ func (s *IntSuite) TestBPFSessionDifferentiation(c *check.C) {
 		return c, nil, nil, tconf
 	}
 	main := s.newTeleportWithConfig(makeConfig())
-	defer main.StopAll()
+	defer main.StopAll(c)
 
 	// Create two client terminals and channel to signal when the clients are
 	// done with the terminals.

@@ -59,6 +59,7 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/check.v1"
 )
 
 const (
@@ -1136,74 +1137,64 @@ func (i *TeleInstance) NewClient(cfg ClientConfig) (*client.TeleportClient, erro
 
 // StopProxy loops over the extra nodes in a TeleInstance and stops all
 // nodes where the proxy server is enabled.
-func (i *TeleInstance) StopProxy() error {
-	var errors []error
-
+func (i *TeleInstance) StopProxy(c *check.C) {
 	for _, p := range i.Nodes {
 		if p.Config.Proxy.Enabled {
 			if err := p.Close(); err != nil {
-				errors = append(errors, err)
-				log.Errorf("Failed closing extra proxy: %v.", err)
+				c.Errorf("Failed closing extra proxy: %v.", err)
 			}
 			if err := p.Wait(); err != nil {
-				errors = append(errors, err)
-				log.Errorf("Failed to stop extra proxy: %v.", err)
+				c.Errorf("Failed to stop extra proxy: %v.", err)
 			}
 		}
 	}
-
-	return trace.NewAggregate(errors...)
 }
 
 // StopNodes stops additional nodes
-func (i *TeleInstance) StopNodes() error {
-	var errors []error
+func (i *TeleInstance) StopNodes(c *check.C) {
 	for _, node := range i.Nodes {
 		if err := node.Close(); err != nil {
-			errors = append(errors, err)
-			log.Errorf("failed closing extra node %v", err)
+			c.Errorf("Failed closing extra node: %v.", err)
 		}
 		if err := node.Wait(); err != nil {
-			errors = append(errors, err)
-			log.Errorf("failed stopping extra node %v", err)
+			c.Errorf("Failed stopping extra node: %v.", err)
 		}
 	}
-	return trace.NewAggregate(errors...)
 }
 
 // StopAuth stops the auth server process. If removeData is true, the data
 // directory is also cleaned up.
-func (i *TeleInstance) StopAuth(removeData bool) error {
+func (i *TeleInstance) StopAuth(c *check.C, removeData bool) {
 	if i.Config != nil && removeData {
 		err := os.RemoveAll(i.Config.DataDir)
 		if err != nil {
-			log.Error("failed removing temporary local Teleport directory", err)
+			c.Logf("Failed removing temporary local Teleport directory", err)
 		}
 	}
 
-	log.Infof("Asking Teleport to stop")
-	err := i.Process.Close()
-	if err != nil {
-		log.Error(err)
-		return trace.Wrap(err)
+	c.Log("Asking Teleport to stop.")
+	if i.Process != nil {
+		err := i.Process.Close()
+		if err != nil {
+			c.Error("Failed to close auth service: %v.", err)
+		}
 	}
-	defer func() {
-		log.Infof("Teleport instance '%v' stopped!", i.Secrets.SiteName)
-	}()
-	return i.Process.Wait()
+	if i.Process == nil {
+		return nil
+	}
+	defer c.Logf("Teleport instance %q stopped!", i.Secrets.SiteName)
+	if err := i.Process.Wait(); err != nil {
+		c.Error("Failed to wait for auth service: %v.", err)
+	}
 }
 
 // StopAll stops all spawned processes (auth server, nodes, proxies). StopAll
 // should always be called at the end of TeleInstance's usage.
-func (i *TeleInstance) StopAll() error {
-	var errors []error
-
+func (i *TeleInstance) StopAll(c *check.C) {
 	// Stop all processes within this instance.
-	errors = append(errors, i.StopNodes())
-	errors = append(errors, i.StopProxy())
-	errors = append(errors, i.StopAuth(true))
-
-	return trace.NewAggregate(errors...)
+	i.StopNodes(c)
+	i.StopProxy(c)
+	i.StopAuth(c, true)
 }
 
 func startAndWait(process *service.TeleportProcess, expectedEvents []string) ([]service.Event, error) {
