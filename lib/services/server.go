@@ -24,12 +24,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
 
+	"github.com/gogo/protobuf/proto"
+	"github.com/google/go-cmp/cmp"
 	"github.com/jonboulle/clockwork"
 )
 
@@ -91,6 +92,9 @@ type Server interface {
 	LabelsString() string
 	// CheckAndSetDefaults checks and set default values for any missing fields.
 	CheckAndSetDefaults() error
+
+	// DeepCopy creates a clone of this server value
+	DeepCopy() Server
 }
 
 // ServersToV1 converts list of servers to slice of V1 style ones
@@ -365,6 +369,33 @@ func (s *ServerV2) CheckAndSetDefaults() error {
 	}
 
 	return nil
+}
+
+// DeepCopy creates a clone of this server value
+func (s *ServerV2) DeepCopy() Server {
+	return proto.Clone(s).(*ServerV2)
+}
+
+// Implements proto.Merger
+func (r *Rotation) Merge(src proto.Message) {
+	s, ok := src.(*Rotation)
+	if !ok {
+		return
+	}
+	*r = *s
+}
+
+// Implements proto.Merger
+func (r *Metadata) Merge(src proto.Message) {
+	m, ok := src.(*Metadata)
+	if !ok {
+		return
+	}
+	*r = *m
+	if m.Expires != nil {
+		expires := *m.Expires
+		r.Expires = &expires
+	}
 }
 
 const (
