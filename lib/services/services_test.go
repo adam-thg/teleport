@@ -173,5 +173,5 @@ func TestServerDeepCopy(t *testing.T) {
 	srv2.(*ServerV2).Metadata.Expires = &expires2
 	srv3 := srv.DeepCopy()
 	require.Empty(t, cmp.Diff(srv, srv3))
-	require.Empty(t, cmp.Diff(srv2, srv3))
+	require.NotEmpty(t, cmp.Diff(srv2, srv3))
 }
