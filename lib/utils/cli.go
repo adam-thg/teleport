@@ -17,7 +17,6 @@ limitations under the License.
 package utils
 
 import (
-	"bytes"
 	"crypto/x509"
 	"fmt"
 	"io"
@@ -26,12 +25,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/gravitational/teleport"
 
 	"github.com/gravitational/kingpin"
 	"github.com/gravitational/trace"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -68,12 +67,52 @@ func InitLogger(purpose LoggingPurpose, level log.Level, verbose ...bool) {
 	}
 }
 
-// InitLoggerForTests initializes the standard logger for tests
-func InitLoggerForTests() {
-	log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
-	log.SetFormatter(&trace.TextFormatter{})
-	log.SetLevel(log.DebugLevel)
-	log.SetOutput(os.Stderr)
+// InitLoggerForTests initializes the standard logger for tests with verbosity
+func InitLoggerForTests(verbose bool) {
+	logger := log.StandardLogger()
+	logger.ReplaceHooks(make(log.LevelHooks))
+	logger.SetFormatter(&trace.TextFormatter{})
+	logger.SetLevel(log.DebugLevel)
+	logger.SetOutput(os.Stderr)
+	if verbose {
+		return
+	}
+	logger.SetLevel(log.WarnLevel)
+	logger.SetOutput(ioutil.Discard)
+}
+
+// NewLoggerForTests creates a new logger for test environment
+func NewLoggerForTests() *log.Logger {
+	logger := log.New()
+	logger.ReplaceHooks(make(log.LevelHooks))
+	logger.SetFormatter(&trace.TextFormatter{})
+	logger.SetLevel(log.DebugLevel)
+	logger.SetOutput(os.Stderr)
+	return logger
+}
+
+// WrapLogger wraps an existing logger entry and returns
+// an value satisfying the Logger interface
+func WrapLogger(logger *log.Entry) Logger {
+	return &logWrapper{Entry: logger}
+}
+
+// NewLogger creates a new empty logger
+func NewLogger() *log.Logger {
+	logger := log.New()
+	logger.SetFormatter(&trace.TextFormatter{
+		DisableTimestamp: true,
+		EnableColors:     trace.IsTerminal(os.Stderr),
+	})
+	return logger
+}
+
+// Logger describes a logger value
+type Logger interface {
+	log.FieldLogger
+	// GetLevel specifies the level at which this logger
+	// value is logging
+	GetLevel() log.Level
 }
 
 // FatalError is for CLI front-ends: it detects gravitational/trace debugging
@@ -151,12 +190,9 @@ func UserMessageFromError(err error) string {
 
 // Consolef prints the same message to a 'ui console' (if defined) and also to
 // the logger with INFO priority
-func Consolef(w io.Writer, component string, msg string, params ...interface{}) {
-	entry := log.WithFields(log.Fields{
-		trace.Component: component,
-	})
+func Consolef(w io.Writer, log log.FieldLogger, component, msg string, params ...interface{}) {
 	msg = fmt.Sprintf(msg, params...)
-	entry.Info(msg)
+	log.Info(msg)
 	if w != nil {
 		component := strings.ToUpper(component)
 		// 13 is the length of "[KUBERNETES]", which is the longest component
@@ -191,56 +227,39 @@ func EscapeControl(s string) string {
 	return s
 }
 
-// Fire writes the provided log entry to the configured test logger
-func (r testHook) Fire(entry *log.Entry) error {
-	msg, err := entry.String()
-	if err != nil {
-		// defaultLogger().Warnf("Failed to convert log entry: %v.", err)
-		return nil
-	}
-	_, err = io.WriteString(r.w, msg)
-	return trace.Wrap(err)
-}
-
-// Levels returns the list of levels this hook is active on
-func (r testHook) Levels() []log.Level {
-	return log.AllLevels
-}
-
-type testHook struct {
-	w io.Writer
-}
-
-func newTestWriter(l testLogger) *testWriter {
-	return &testWriter{
-		l:   l,
-		buf: &bytes.Buffer{},
-	}
-}
-
-func (r *testWriter) Write(p []byte) (n int, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var lf = []byte("\n")
-	if !bytes.HasSuffix(p, lf) {
-		r.buf.Write(p)
-		return len(p), nil
-	}
-	r.buf.Write(p[:len(p)-len(lf)])
-	r.l.Log(r.buf.String())
-	r.buf.Reset()
+// Write writes the specifies buffer p to the underlying logger at INFO level.
+// Implements io.Writer
+func (r *StdlogAdapter) Write(p []byte) (n int, err error) {
+	r.log(string(p))
 	return len(p), nil
 }
 
-type testWriter struct {
-	mu  sync.Mutex
-	l   testLogger
-	buf *bytes.Buffer
+// NewStdlogAdaptor creates a new adaptor for the specified logger
+func NewStdlogAdaptor(logger leveledOutputFunc) *StdlogAdapter {
+	return &StdlogAdapter{
+		log: logger,
+	}
 }
 
-type testLogger interface {
-	// Log logs the specified values in the context of a test
-	Log(...interface{})
+// StdlogAdapter is an io.Writer that writes into an instance
+// of logrus.Logger
+type StdlogAdapter struct {
+	log leveledOutputFunc
+}
+
+// leveledOutputFunc describes a function that emits given
+// arguments at the specific level to an underlying logger
+type leveledOutputFunc func(args ...interface{})
+
+// GetLevel returns the level of the underlying logger
+func (r *logWrapper) GetLevel() logrus.Level {
+	return r.Entry.Logger.GetLevel()
+}
+
+// logWrapper wraps a log entry.
+// Implements Logger
+type logWrapper struct {
+	*logrus.Entry
 }
 
 // needsQuoting returns true if any non-printable characters are found.

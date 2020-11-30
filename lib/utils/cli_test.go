@@ -23,8 +23,9 @@ import (
 	"testing"
 
 	"github.com/gravitational/trace"
-	"github.com/stretchr/testify/require"
 
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/check.v1"
 )
 
@@ -34,12 +35,11 @@ type CLISuite struct {
 var _ = check.Suite(&CLISuite{})
 
 func (s *CLISuite) SetUpSuite(c *check.C) {
-	InitLoggerForTests()
+	InitLoggerForTests(testing.Verbose())
 }
 
 func (s *CLISuite) TestUserMessageFromError(c *check.C) {
-	// FIXME: enable after https://drone.gravitational.io/gravitational/teleport/3517 is merged
-	c.Skip("TODO")
+	c.Skip("Enable after https://drone.gravitational.io/gravitational/teleport/3517 is merged.")
 	tests := []struct {
 		comment   string
 		inError   error
@@ -74,6 +74,6 @@ func (s *CLISuite) TestUserMessageFromError(c *check.C) {
 func TestConsolefLongComponent(t *testing.T) {
 	require.NotPanics(t, func() {
 		component := strings.Repeat("na ", 10) + "batman!"
-		Consolef(ioutil.Discard, component, "test message")
+		Consolef(ioutil.Discard, logrus.New(), component, "test message")
 	})
 }

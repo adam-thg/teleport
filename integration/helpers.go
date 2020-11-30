@@ -105,6 +105,9 @@ type TeleInstance struct {
 	// DataDir specifies the root directory for all state information
 	// used by the instance during a single test
 	DataDir string
+
+	// log specifies the instance logger
+	log utils.Logger
 }
 
 type User struct {
@@ -162,6 +165,9 @@ type InstanceConfig struct {
 	// DataDir specifies the root directory for all state information
 	// used by the instance  during a single test
 	DataDir string
+
+	// log specifies the logger
+	log utils.Logger
 }
 
 // NewInstance creates a new Teleport process instance.
@@ -227,6 +233,7 @@ func NewInstance(cfg InstanceConfig) *TeleInstance {
 		Hostname:      cfg.NodeName,
 		UploadEventsC: make(chan events.UploadEvent, 100),
 		DataDir:       cfg.DataDir,
+		log:           cfg.log,
 	}
 	secrets := InstanceSecrets{
 		SiteName:     cfg.ClusterName,
@@ -374,6 +381,7 @@ func (i *TeleInstance) Create(trustedSecrets []*InstanceSecrets, enableSSH bool,
 	tconf := service.MakeDefaultConfig()
 	tconf.SSH.Enabled = enableSSH
 	tconf.Console = console
+	tconf.Log = i.log
 	tconf.Proxy.DisableWebService = true
 	tconf.Proxy.DisableWebInterface = true
 	return i.CreateEx(trustedSecrets, tconf)
@@ -492,6 +500,7 @@ func (i *TeleInstance) GenerateConfig(trustedSecrets []*InstanceSecrets, tconf *
 	if tconf == nil {
 		tconf = service.MakeDefaultConfig()
 	}
+	tconf.Log = i.log
 	tconf.DataDir = dataDir
 	tconf.UploadEventsC = i.UploadEventsC
 	tconf.CachePolicy.Enabled = true
@@ -774,6 +783,7 @@ func (i *TeleInstance) StartNodeAndProxy(name string, sshPort, proxyWebPort, pro
 
 	tconf := service.MakeDefaultConfig()
 
+	tconf.Log = i.log
 	authServer := utils.MustParseAddr(net.JoinHostPort(i.Hostname, i.GetPortAuth()))
 	tconf.AuthServers = append(tconf.AuthServers, *authServer)
 	tconf.Token = "token"
@@ -854,7 +864,8 @@ func (i *TeleInstance) StartProxy(cfg ProxyConfig) (reversetunnel.Server, error)
 	}
 
 	tconf := service.MakeDefaultConfig()
-
+	tconf.Console = nil
+	tconf.Log = i.log
 	authServer := utils.MustParseAddr(net.JoinHostPort(i.Hostname, i.GetPortAuth()))
 	tconf.AuthServers = append(tconf.AuthServers, *authServer)
 	tconf.CachePolicy = service.CachePolicy{Enabled: true}
@@ -1170,16 +1181,13 @@ func (i *TeleInstance) StopAuth(t testingInterface, removeData bool) {
 			t.Logf("Failed removing temporary local Teleport directory", err)
 		}
 	}
-
-	t.Log("Asking Teleport to stop.")
-	if i.Process != nil {
-		err := i.Process.Close()
-		if err != nil {
-			t.Error("Failed to close auth service: %v.", err)
-		}
-	}
 	if i.Process == nil {
 		return
+	}
+	t.Log("Asking Teleport to stop.")
+	err := i.Process.Close()
+	if err != nil {
+		t.Error("Failed to close auth service: %v.", err)
 	}
 	defer t.Logf("Teleport instance %q stopped!", i.Secrets.SiteName)
 	if err := i.Process.Wait(); err != nil {

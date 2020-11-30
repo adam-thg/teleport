@@ -32,6 +32,7 @@ import (
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/utils/testlog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/gravitational/trace"
@@ -46,7 +47,7 @@ type ServiceTestSuite struct {
 var _ = check.Suite(&ServiceTestSuite{})
 
 func (s *ServiceTestSuite) SetUpSuite(c *check.C) {
-	utils.InitLoggerForTests()
+	utils.InitLoggerForTests(testing.Verbose())
 }
 
 func (s *ServiceTestSuite) TestSelfSignedHTTPS(c *check.C) {
@@ -60,6 +61,7 @@ func (s *ServiceTestSuite) TestSelfSignedHTTPS(c *check.C) {
 	cfg := &Config{
 		DataDir:  c.MkDir(),
 		Hostname: "example.com",
+		Log:      utils.WrapLogger(log.WithField("test", c.TestName())),
 	}
 	err := initSelfSignedHTTPSCert(cfg)
 	c.Assert(err, check.IsNil)
@@ -169,6 +171,9 @@ func TestMonitor(t *testing.T) {
 func (s *ServiceTestSuite) TestCheckPrincipals(c *check.C) {
 	dataDir := c.MkDir()
 
+	t := testlog.NewCheckTestWrapper(c)
+	defer t.Close()
+
 	// Create a test auth server to extract the server identity (SSH and TLS
 	// certificates).
 	testAuthServer, err := auth.NewTestAuthServer(auth.TestAuthServerConfig{
@@ -221,7 +226,7 @@ func (s *ServiceTestSuite) TestCheckPrincipals(c *check.C) {
 		},
 	}
 	for _, tt := range tests {
-		ok := checkServerIdentity(testConnector, tt.inPrincipals, tt.inDNS)
+		ok := checkServerIdentity(testConnector, tt.inPrincipals, tt.inDNS, t.Log)
 		c.Assert(ok, check.Equals, tt.outRegenerate)
 	}
 }
@@ -231,6 +236,9 @@ func (s *ServiceTestSuite) TestCheckPrincipals(c *check.C) {
 // setup of true external loggers, but at the time of writing there isn't good
 // support for setting up fake external logging endpoints.
 func (s *ServiceTestSuite) TestInitExternalLog(c *check.C) {
+	t := testlog.NewCheckTestWrapper(c)
+	defer t.Close()
+
 	tts := []struct {
 		events []string
 		isNil  bool
@@ -258,7 +266,7 @@ func (s *ServiceTestSuite) TestInitExternalLog(c *check.C) {
 
 		loggers, err := initExternalLog(context.Background(), services.AuditConfig{
 			AuditEventsURI: tt.events,
-		})
+		}, t.Log)
 
 		if tt.isErr {
 			c.Assert(err, check.NotNil, cmt)
