@@ -25,10 +25,11 @@ import (
 	"github.com/gravitational/teleport/lib/fixtures"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
-	"github.com/stretchr/testify/require"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/check.v1"
 )
 
@@ -265,6 +266,65 @@ func TestHeartbeatAnnounce(t *testing.T) {
 	}
 }
 
+func TestHeartbeatEmptyExpiry(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+	clock := clockwork.NewFakeClock()
+
+	// No Expiry set in returned server.
+	srv := &services.ServerV2{
+		Kind:    services.KindKubeService,
+		Version: services.V2,
+		Metadata: services.Metadata{
+			Namespace: defaults.Namespace,
+			Name:      "1",
+		},
+		Spec: services.ServerSpecV2{
+			Addr:     "127.0.0.1:1234",
+			Hostname: "2",
+		},
+	}
+
+	announcer := newFakeAnnouncer(ctx)
+	hb, err := NewHeartbeat(HeartbeatConfig{
+		Context:         ctx,
+		Mode:            HeartbeatModeKube,
+		Component:       "test",
+		Announcer:       announcer,
+		CheckPeriod:     time.Second,
+		AnnouncePeriod:  60 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		ServerTTL:       600 * time.Second,
+		Clock:           clock,
+		GetServerInfo: func() (services.Server, error) {
+			return srv, nil
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, hb.state, HeartbeatStateInit)
+
+	err = hb.fetchAndAnnounce()
+	require.NoError(t, err)
+
+	// Expiry should be populated by the heartbeat agent.
+	exp := clock.Now().Add(hb.ServerTTL)
+	want := &services.ServerV2{
+		Kind:    services.KindKubeService,
+		Version: services.V2,
+		Metadata: services.Metadata{
+			Namespace: defaults.Namespace,
+			Name:      "1",
+			Expires:   &exp,
+		},
+		Spec: services.ServerSpecV2{
+			Addr:     "127.0.0.1:1234",
+			Hostname: "2",
+		},
+	}
+	require.Empty(t, cmp.Diff(srv, want))
+}
+
 func newFakeAnnouncer(ctx context.Context) *fakeAnnouncer {
 	ctx, cancel := context.WithCancel(ctx)
 	return &fakeAnnouncer{
@@ -278,6 +338,7 @@ func newFakeAnnouncer(ctx context.Context) *fakeAnnouncer {
 type fakeAnnouncer struct {
 	err         error
 	upsertCalls map[HeartbeatMode]int
+	lastSrv     services.Server
 	closeCalls  int
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -285,6 +346,7 @@ type fakeAnnouncer struct {
 }
 
 func (f *fakeAnnouncer) UpsertAppServer(ctx context.Context, s services.Server) (*services.KeepAlive, error) {
+	f.lastSrv = s
 	f.upsertCalls[HeartbeatModeApp]++
 	if f.err != nil {
 		return nil, f.err
@@ -293,6 +355,7 @@ func (f *fakeAnnouncer) UpsertAppServer(ctx context.Context, s services.Server) 
 }
 
 func (f *fakeAnnouncer) UpsertNode(s services.Server) (*services.KeepAlive, error) {
+	f.lastSrv = s
 	f.upsertCalls[HeartbeatModeNode]++
 	if f.err != nil {
 		return nil, f.err
@@ -301,16 +364,19 @@ func (f *fakeAnnouncer) UpsertNode(s services.Server) (*services.KeepAlive, erro
 }
 
 func (f *fakeAnnouncer) UpsertProxy(s services.Server) error {
+	f.lastSrv = s
 	f.upsertCalls[HeartbeatModeProxy]++
 	return f.err
 }
 
 func (f *fakeAnnouncer) UpsertAuthServer(s services.Server) error {
+	f.lastSrv = s
 	f.upsertCalls[HeartbeatModeAuth]++
 	return f.err
 }
 
 func (f *fakeAnnouncer) UpsertKubeService(ctx context.Context, s services.Server) error {
+	f.lastSrv = s
 	f.upsertCalls[HeartbeatModeKube]++
 	return f.err
 }

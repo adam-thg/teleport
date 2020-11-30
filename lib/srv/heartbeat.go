@@ -313,6 +313,11 @@ func (h *Heartbeat) fetch() error {
 		h.reset(HeartbeatStateInit)
 		return trace.Wrap(err)
 	}
+	// Always set server expiry, no server resource should linger forever after
+	// deletion.
+	if server.Expiry().IsZero() {
+		server.SetExpiry(h.Clock.Now().UTC().Add(h.ServerTTL))
+	}
 	switch h.state {
 	// in case of successful state fetch, move to announce from init
 	case HeartbeatStateInit:
